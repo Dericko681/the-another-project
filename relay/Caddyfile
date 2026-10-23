@@ -1,0 +1,37 @@
+# relay/Caddyfile — TLS edge in front of the Node relay.
+#
+# Terminates BOTH protocols on one port (3443 by default):
+#
+#   UDP 3443 → HTTP/3 over QUIC   ↔ what the desktop app prefers
+#   TCP 3443 → HTTP/2 via ALPN    ↔ the fallback
+#
+# and reverse-proxies everything to the plaintext relay on 127.0.0.1:3000.
+# Caddy enables HTTP/3 on every HTTPS site by default, so there is no explicit
+# "enable quic" switch — one listener serves both transports.
+#
+# TLS: `tls internal` issues a certificate from Caddy's local CA (no ACME, no
+# public DNS, works offline). `skip_install_trust` stops Caddy from asking for
+# sudo to install that CA system-wide; the app turns verification off for this
+# loopback edge instead — see flutter/lib/relay_transport_io.dart.
+#
+# Port and upstream are overridable so scripts/edge.sh stays the only source of
+# truth: EDGE_PORT=4443 RELAY_PORT=3001 ./scripts/edge.sh
+#
+# Start it with ./scripts/edge.sh (which also downloads Caddy on first run).
+{
+	admin off
+	skip_install_trust
+	# Without this Caddy also binds :80 to redirect HTTP→HTTPS, which fails
+	# without root and is pointless for a loopback edge.
+	auto_https disable_redirects
+}
+
+https://localhost:{$EDGE_PORT:3443} {
+	tls internal
+
+	# SSE: without this Caddy buffers the response and the token stream arrives
+	# in bursts (or not at all until the turn ends).
+	reverse_proxy 127.0.0.1:{$RELAY_PORT:3000} {
+		flush_interval -1
+	}
+}

@@ -34,9 +34,11 @@
 library;
 
 import 'dart:async';
+import 'dart:io' show InternetAddress;
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
+import 'package:quic_transport/quic_transport.dart' as qt;
 import 'package:rhttp/rhttp.dart' as rhttp;
 
 import 'relay_transport_base.dart';
@@ -66,11 +68,12 @@ const rhttp.TimeoutSettings _streamTimeouts = rhttp.TimeoutSettings(
 
 bool _rustReady = false;
 
-/// Loads the Rust library once. Guarded because rhttp's own init is not
-/// idempotent-safe across hot restarts.
+/// Loads the Rust libraries once. Guarded because both rhttp and the
+/// quic_transport plugin's init are not idempotent-safe across hot restarts.
 Future<void> _ensureRust() async {
   if (_rustReady) return;
   await rhttp.Rhttp.init();
+  await qt.init();
   _rustReady = true;
 }
 
@@ -171,6 +174,44 @@ Future<RelayTransport> _open(
 ) async =>
     _RhttpTransport(await _client(pref, _streamTimeouts), label, fallback);
 
+/// Transport backed by the owned-in-Rust QUIC client (quinn + h3).
+class _QuicTransport implements RelayTransport {
+  final qt.QuicClient _quic;
+
+  _QuicTransport(this._quic);
+
+  @override
+  http.Client get client => _quic.httpClient;
+
+  @override
+  String get label => 'QUIC · HTTP/3 (Rust)';
+
+  @override
+  bool get isFallback => false;
+
+  @override
+  Future<void> close() async {}
+}
+
+/// Probes `GET /health` over QUIC using the owned-in-Rust client.
+///
+/// Returns null on success, else why it failed. Resolves the host to an IP
+/// because quinn connects to a `SocketAddr` (reqwest resolved DNS for us).
+Future<String?> _probeQuic(Uri base) async {
+  try {
+    final host = base.host;
+    final addr = (await InternetAddress.lookup(host)).first.address;
+    final client = await qt.QuicClient.connect(
+      addr: '$addr:${base.port}',
+      host: host,
+    );
+    final res = await client.request('GET', '/health');
+    return res.isOk ? null : 'HTTP ${res.status}';
+  } catch (e) {
+    return e.toString();
+  }
+}
+
 /// Builds the transport for [base] (e.g. `https://localhost:3443`).
 Future<RelayTransport> createRelayTransport(Uri base) async {
   // Plaintext cannot carry QUIC, and `http://` is only used by the web target
@@ -186,10 +227,14 @@ Future<RelayTransport> createRelayTransport(Uri base) async {
   final failures = <String>[];
 
   if (_forced != 'h2') {
-    final h3Error = await _probe(base, rhttp.HttpVersionPref.http3);
+    final h3Error = await _probeQuic(base);
     if (h3Error == null) {
       debugPrint('[transport] QUIC up — $base answers on HTTP/3 (UDP)');
-      return _open(rhttp.HttpVersionPref.http3, 'QUIC · HTTP/3', false);
+      final quic = await qt.QuicClient.connect(
+        addr: '${(await InternetAddress.lookup(base.host)).first.address}:${base.port}',
+        host: base.host,
+      );
+      return _QuicTransport(quic);
     }
     debugPrint('[transport] QUIC unavailable ($h3Error) — trying HTTP/2');
     failures.add('HTTP/3 (QUIC): $h3Error');

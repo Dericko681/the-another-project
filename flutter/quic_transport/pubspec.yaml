@@ -1,0 +1,32 @@
+name: quic_transport
+description: >-
+  Owned-in-Rust QUIC (HTTP/3) client for Flutter, built on quinn + h3.
+  Exposes connect / GET / stream to Dart over flutter_rust_bridge FFI.
+  The point of owning the transport in Rust is to reach QUIC features the
+  Dart layer cannot: connection migration, 0-RTT and fine-grained resume.
+version: 0.1.0
+publish_to: 'none'
+
+environment:
+  sdk: ^3.4.0
+  flutter: '>=3.22.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Must stay pinned in lockstep with the Rust crate's flutter_rust_bridge
+  # (see rust/Cargo.toml). A mismatch makes the Dart and Rust sides disagree
+  # on the wire format and panics on the callback path.
+  flutter_rust_bridge: 2.11.1
+  http: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  plugin:
+    platforms:
+      linux:
+        ffiPlugin: true

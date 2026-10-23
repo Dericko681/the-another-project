@@ -1,0 +1,40 @@
+[package]
+name = "quic_transport"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+flutter_rust_bridge = { version = "=2.11.1" }
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+
+# QUIC transport + TLS
+quinn = "0.11"
+rustls = { version = "0.23", features = ["ring"] }
+
+# HTTP/3 on top of quinn (QPACK + framing)
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+
+# http::Request / http::Response types used by h3
+http = "1"
+
+# Buf trait for reading h3 body chunks
+bytes = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
+[profile.release]
+opt-level = 3
+strip = true
+panic = "abort"
+lto = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = 3
+panic = "abort"

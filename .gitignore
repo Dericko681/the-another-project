@@ -1,18 +1,33 @@
-# Node
+# ── Rust ──────────────────────────────────────────────────────────────────────
+# Build output for the quic_transport plugin (and any future Rust crate).
+# This is the big one — a debug build of quinn/h3/rustls is hundreds of MB.
+**/target/
+**/Cargo.lock
+
+# ── Node / relay ──────────────────────────────────────────────────────────────
 relay/node_modules/
 
-# Flutter
+# ── TLS edge — downloaded Caddy binary (see scripts/edge.sh) ─────────────────
+tools/bin/
+
+# ── Python (HTTP/3 probe) ─────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+
+# ── Flutter ───────────────────────────────────────────────────────────────────
 flutter/.dart_tool/
 flutter/.flutter-plugins
 flutter/.flutter-plugins-dependencies
 flutter/.packages
 flutter/build/
 flutter/pubspec.lock
+flutter/quic_transport/.dart_tool/
+flutter/quic_transport/build/
 
-# macOS
+# ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
 
-# Editor
+# ── Editor / OS ───────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
