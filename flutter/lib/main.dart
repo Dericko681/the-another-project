@@ -74,6 +74,9 @@ class _OpenCodeSpikePageState extends State<OpenCodeSpikePage> {
   String _status = 'connecting…';
   String? _error;
 
+  /// Negotiated transport, e.g. `QUIC · HTTP/3`. Null until the first request.
+  String? _protocol;
+
   SessionInfo? get _current {
     for (final s in _sessions) {
       if (s.id == _sessionId) return s;
@@ -115,6 +118,8 @@ class _OpenCodeSpikePageState extends State<OpenCodeSpikePage> {
         _agent = agents.where((a) => a.id == 'assistant').firstOrNull ??
             (agents.isEmpty ? null : agents.first);
         _model = meta.defaultModel;
+        // health() was the first request, so the transport is negotiated now.
+        _protocol = _client.protocol;
         _status = 'connected';
       });
 
@@ -641,6 +646,11 @@ class _OpenCodeSpikePageState extends State<OpenCodeSpikePage> {
         ],
       ),
       actions: [
+        if (_protocol != null)
+          _ProtocolChip(
+            label: _protocol!,
+            fallback: _client.usingFallback,
+          ),
         if (_busy)
           IconButton(
             icon: const Icon(Icons.stop_circle_outlined, color: Colors.redAccent),
@@ -1206,6 +1216,48 @@ class _ToolChip extends StatelessWidget {
       '${tool.name} · ${tool.status}',
       if (command != null) '$command',
     ].join('\n');
+  }
+}
+
+// ─── Protocol chip ────────────────────────────────────────────────────────────
+
+class _ProtocolChip extends StatelessWidget {
+  final String label;
+  final bool fallback;
+
+  const _ProtocolChip({required this.label, required this.fallback});
+
+  @override
+  Widget build(BuildContext context) {
+    // QUIC is the point of this app's transport, so make a downgrade obvious
+    // rather than hiding it.
+    final color = fallback ? Colors.orangeAccent : Colors.greenAccent;
+
+    return Center(
+      child: Tooltip(
+        message: fallback
+            ? 'HTTP/3 was unavailable — running on HTTP/2'
+            : 'Connected over QUIC (HTTP/3)',
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.black26,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: color.withOpacity(0.4)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(fallback ? Icons.swap_horiz : Icons.bolt,
+                  size: 12, color: color),
+              const SizedBox(width: 5),
+              Text(label, style: TextStyle(fontSize: 10, color: color)),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

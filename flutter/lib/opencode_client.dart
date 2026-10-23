@@ -5,7 +5,9 @@
 ///   2. [SessionInfo]          — a session row (title, model, cost, running…)
 ///   3. [OpenCodeRelayClient]  — every REST call the UI needs, plus the SSE feed
 ///
-/// The relay (relay/index.js) must be running on [kRelayUrl] before this starts.
+/// The relay's TLS edge (relay/Caddyfile) must be running on [kRelayUrl] before
+/// this starts. On desktop that edge speaks QUIC and HTTP/2; see
+/// [relay_transport_io.dart] for the negotiation.
 ///
 /// Nothing in this file depends on Flutter widgets, so it can be unit-tested
 /// with `flutter test` or reused from a CLI.
@@ -15,15 +17,31 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:fetch_client/fetch_client.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
+import 'relay_transport.dart';
+
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-/// Point this at wherever the Node relay is running.
+/// Web target: the browser talks straight to the plaintext relay.
+const String _kRelayUrlWeb = 'http://127.0.0.1:3000';
+
+/// Desktop target: the TLS edge, which terminates **QUIC on UDP 3443** and
+/// **HTTP/2 on TCP 3443** and proxies to the relay on 3000 (see `relay/Caddyfile`).
+/// `localhost`, not `127.0.0.1`, so SNI matches the edge's certificate.
+const String _kRelayUrlDesktop = 'https://localhost:3443';
+
+/// `--dart-define=RELAY_URL=...` overrides both, for pointing at a remote relay
+/// or back at the plaintext `http://127.0.0.1:3000`.
+const String _kRelayUrlOverride = String.fromEnvironment('RELAY_URL');
+
+/// Where the relay (or its TLS edge) lives.
 /// On an Android emulator use 10.0.2.2 instead of 127.0.0.1.
-const String kRelayUrl = 'http://127.0.0.1:3000';
+String get kRelayUrl => _kRelayUrlOverride.isNotEmpty
+    ? _kRelayUrlOverride
+    : (kIsWeb ? _kRelayUrlWeb : _kRelayUrlDesktop);
+
 
 // ─── Typed event model ────────────────────────────────────────────────────────
 
@@ -354,16 +372,38 @@ class AgentInfo {
 class OpenCodeRelayClient {
   final String baseUrl;
 
-  // On Flutter web, dart:http uses XHR under the hood (BrowserClient), which
-  // buffers the *entire* response before emitting anything on response.stream.
-  // That means an infinite SSE connection never delivers a single byte.
-  // FetchClient uses the browser's native Fetch API with streaming body reads,
-  // which is exactly what SSE requires. On native (mobile/desktop) the default
-  // http.Client uses Dart's IO stack, which already streams correctly.
-  final http.Client _http =
-      kIsWeb ? FetchClient(mode: RequestMode.cors) : http.Client();
+  // The transport is negotiated once, lazily, on the first request: QUIC if the
+  // edge answers over UDP, otherwise HTTP/2. See relay_transport_io.dart.
+  RelayTransport? _transport;
+  Future<RelayTransport>? _negotiating;
+
+  /// Negotiated protocol, available after the first request completes.
+  String? get protocol => _transport?.label;
+
+  /// True when QUIC was unavailable and the app fell back to HTTP/2.
+  bool get usingFallback => _transport?.isFallback ?? false;
 
   OpenCodeRelayClient({String? baseUrl}) : baseUrl = (baseUrl ?? kRelayUrl);
+
+  Future<RelayTransport> _connection() async {
+    final ready = _transport;
+    if (ready != null) return ready;
+    // Share one in-flight negotiation between concurrent callers, and forget a
+    // failed one so a later request can retry once the edge is up.
+    final existing = _negotiating;
+    if (existing != null) return existing;
+
+    final pending = createRelayTransport(Uri.parse(baseUrl));
+    _negotiating = pending;
+    try {
+      final transport = await pending;
+      _transport = transport;
+      return transport;
+    } catch (_) {
+      _negotiating = null;
+      rethrow;
+    }
+  }
 
   // ── HTTP plumbing ──────────────────────────────────────────────────────────
 
@@ -372,6 +412,7 @@ class OpenCodeRelayClient {
 
   Future<dynamic> _send(String method, String path,
       {Map<String, dynamic>? body, Map<String, String>? query}) async {
+    final transport = await _connection();
     final req = http.Request(method, _uri(path, query));
     req.headers['Accept'] = 'application/json';
     if (body != null) {
@@ -379,7 +420,8 @@ class OpenCodeRelayClient {
       req.body = jsonEncode(body);
     }
 
-    final res = await _http.send(req);
+    final res = await transport.client.send(req);
+
     final text = await res.stream.bytesToString();
 
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -548,7 +590,8 @@ class OpenCodeRelayClient {
           request.headers['Accept'] = 'text/event-stream';
           request.headers['Cache-Control'] = 'no-cache';
 
-          final response = await _http.send(request);
+          final transport = await _connection();
+          final response = await transport.client.send(request);
 
           if (response.statusCode != 200) {
             throw Exception('SSE endpoint returned ${response.statusCode}');
@@ -596,7 +639,7 @@ class OpenCodeRelayClient {
     return controller.stream;
   }
 
-  void dispose() => _http.close();
+  void dispose() => _transport?.close();
 }
 
 class OpenCodeApiException implements Exception {
